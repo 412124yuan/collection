@@ -1,0 +1,510 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, collection, addDoc, onSnapshot, 
+  query, deleteDoc, doc, updateDoc 
+} from 'firebase/firestore';
+import { 
+  getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut 
+} from 'firebase/auth';
+import { 
+  Plus, Search, Filter, Image as ImageIcon, 
+  Star, Trash2, X, DollarSign, Package, Calendar, Info, Maximize2, LogIn, LogOut
+} from 'lucide-react';
+
+// --- Firebase 配置 ---
+const firebaseConfig = {
+  apiKey: "AIzaSyDdbNAzTGWsZfob_CR5lCXP5yKbctbtFVA",
+  authDomain: "collection-6049b.firebaseapp.com",
+  projectId: "collection-6049b",
+  storageBucket: "collection-6049b.firebasestorage.app",
+  messagingSenderId: "829552075224",
+  appId: "1:829552075224:web:5ac93987a43e9a2192d2ad"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+const googleProvider = new GoogleAuthProvider();
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'collection-manager';
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  
+  // UI 狀態
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('All');
+  
+  // 新增品項狀態
+  const [newItem, setNewItem] = useState({
+    name: '',
+    category: '',
+    customCategory: '',
+    price: 0,
+    quantity: 1,
+    date: new Date().toISOString().split('T')[0],
+    status: '全新',
+    rating: 5,
+    imageSource: 'upload', 
+    imageUrl: '',
+    imageBase64: ''
+  });
+
+  const defaultCategories = ['公仔模型', '卡牌', '書籍/漫畫', '電子產品', '服飾', '其他'];
+
+  // 1. 監聽登入狀態
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 2. 登入/登出處理
+  const handleGoogleLogin = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      console.error("Login Failed", error);
+    }
+  };
+
+  const handleLogout = () => signOut(auth);
+
+  // 3. 獲取資料 (符合 Rule 1 規範路徑)
+  useEffect(() => {
+    if (!user) {
+      setItems([]);
+      return;
+    }
+
+    const collectionRef = collection(db, 'artifacts', appId, 'users', user.uid, 'collections');
+    const q = query(collectionRef);
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setItems(data);
+    }, (error) => {
+      console.error("Firestore Permission Denied or Error:", error);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // 4. Base64 轉換處理
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setNewItem({ ...newItem, imageBase64: reader.result });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // 5. 新增收藏
+  const handleAddItem = async (e) => {
+    e.preventDefault();
+    if (!user) return;
+
+    const finalImageUrl = newItem.imageSource === 'upload' ? newItem.imageBase64 : newItem.imageUrl;
+
+    const itemData = {
+      name: newItem.name,
+      category: newItem.category === '自定義' ? newItem.customCategory : newItem.category,
+      price: Number(newItem.price),
+      quantity: Number(newItem.quantity),
+      date: newItem.date,
+      status: newItem.status,
+      rating: Number(newItem.rating),
+      imageUrl: finalImageUrl || 'https://via.placeholder.com/400?text=No+Image',
+      createdAt: new Date().toISOString()
+    };
+
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'collections'), itemData);
+      setShowAddModal(false);
+      setNewItem({
+        name: '', category: '', customCategory: '', price: 0, quantity: 1,
+        date: new Date().toISOString().split('T')[0], status: '全新', rating: 5,
+        imageSource: 'upload', imageUrl: '', imageBase64: ''
+      });
+    } catch (e) {
+      console.error("Error adding document: ", e);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('確定要刪除此收藏嗎？')) return;
+    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'collections', id));
+  };
+
+  // 統計與篩選邏輯
+  const allCategories = useMemo(() => {
+    const categories = new Set(defaultCategories);
+    items.forEach(item => categories.add(item.category));
+    return Array.from(categories);
+  }, [items]);
+
+  const stats = useMemo(() => {
+    return items.reduce((acc, item) => {
+      acc.totalValue += (Number(item.price) || 0) * (Number(item.quantity) || 1);
+      acc.totalCount += (Number(item.quantity) || 1);
+      return acc;
+    }, { totalValue: 0, totalCount: 0 });
+  }, [items]);
+
+  const filteredItems = items.filter(item => {
+    const matchSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchCategory = categoryFilter === 'All' || item.category === categoryFilter;
+    return matchSearch && matchCategory;
+  });
+
+  if (loading) return <div className="h-screen flex items-center justify-center bg-gray-50 font-sans">系統載入中...</div>;
+
+  return (
+    <div className="min-h-screen bg-gray-50 text-gray-900 pb-20 font-sans">
+      {/* 導航列 */}
+      <nav className="sticky top-0 z-40 bg-white/80 backdrop-blur-md border-b shadow-sm px-4 py-3">
+        <div className="max-w-6xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="bg-indigo-600 p-2 rounded-xl">
+                <Package className="text-white w-5 h-5" />
+              </div>
+              <h1 className="text-lg font-black tracking-tight text-gray-800">COLLECTION CLOUD</h1>
+            </div>
+            {user && (
+              <button onClick={handleLogout} className="md:hidden text-gray-400 p-2 hover:text-red-500 transition-colors">
+                <LogOut size={20} />
+              </button>
+            )}
+          </div>
+          
+          <div className="flex items-center gap-3">
+            {!user ? (
+              <button 
+                onClick={handleGoogleLogin}
+                className="flex items-center gap-2 bg-white border border-gray-300 px-4 py-2 rounded-full text-sm font-medium hover:bg-gray-50 transition-all shadow-sm"
+              >
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-4 h-4" alt="Google" />
+                使用 Google 登入
+              </button>
+            ) : (
+              <>
+                <div className="relative flex-1 md:w-64">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
+                  <input 
+                    type="text" 
+                    placeholder="搜尋收藏..." 
+                    className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-full text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                  />
+                </div>
+                <button 
+                  onClick={() => setShowAddModal(true)}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white p-2.5 rounded-full shadow-lg transition-transform active:scale-95"
+                >
+                  <Plus className="w-5 h-5" />
+                </button>
+                <button onClick={handleLogout} className="hidden md:block text-gray-400 p-2 hover:text-red-500 transition-colors">
+                  <LogOut size={20} />
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </nav>
+
+      {user ? (
+        <div className="max-w-6xl mx-auto px-4 mt-6">
+          {/* 數據概覽 */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+            <div className="bg-gradient-to-br from-indigo-600 to-violet-700 p-5 rounded-3xl text-white shadow-xl shadow-indigo-200">
+              <p className="text-[10px] uppercase font-bold opacity-70 mb-1">總市值 (TWD)</p>
+              <h2 className="text-2xl font-black">${stats.totalValue.toLocaleString()}</h2>
+            </div>
+            <div className="bg-white p-5 rounded-3xl border border-gray-100 shadow-sm">
+              <p className="text-[10px] uppercase font-bold text-gray-400 mb-1">物品總數</p>
+              <h2 className="text-2xl font-black text-gray-800">{stats.totalCount} <span className="text-xs font-normal text-gray-400">Items</span></h2>
+            </div>
+            <div className="bg-white p-5 rounded-3xl border border-gray-100 shadow-sm hidden md:block">
+              <p className="text-[10px] uppercase font-bold text-gray-400 mb-1">收藏類別</p>
+              <h2 className="text-2xl font-black text-gray-800">{allCategories.length} <span className="text-xs font-normal text-gray-400">Types</span></h2>
+            </div>
+            <div className="bg-white p-5 rounded-3xl border border-gray-100 shadow-sm">
+              <p className="text-[10px] uppercase font-bold text-gray-400 mb-1">平均熱愛程度</p>
+              <div className="flex items-center gap-1 text-yellow-500">
+                <Star fill="currentColor" size={20} />
+                <h2 className="text-2xl font-black">{(items.reduce((a, b) => a + b.rating, 0) / (items.length || 1)).toFixed(1)}</h2>
+              </div>
+            </div>
+          </div>
+
+          {/* 類別篩選 */}
+          <div className="flex gap-2 overflow-x-auto pb-4 no-scrollbar">
+            {['All', ...allCategories].map(cat => (
+              <button
+                key={cat}
+                onClick={() => setCategoryFilter(cat)}
+                className={`px-5 py-2 rounded-full text-sm font-semibold whitespace-nowrap transition-all ${
+                  categoryFilter === cat 
+                  ? 'bg-gray-800 text-white shadow-md' 
+                  : 'bg-white border border-gray-200 text-gray-500 hover:border-indigo-300'
+                }`}
+              >
+                {cat === 'All' ? '✨ 全部收藏' : cat}
+              </button>
+            ))}
+          </div>
+
+          {/* 收藏牆 */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mt-4">
+            {filteredItems.map(item => (
+              <div key={item.id} className="group bg-white rounded-[2rem] border border-gray-100 overflow-hidden shadow-sm hover:shadow-2xl hover:-translate-y-1 transition-all duration-300">
+                <div className="relative aspect-[4/5] overflow-hidden bg-gray-50">
+                  <img 
+                    src={item.imageUrl} 
+                    alt={item.name}
+                    className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+                  />
+                  <div className="absolute top-4 left-4">
+                    <span className="px-3 py-1 bg-white/90 backdrop-blur shadow-sm text-[10px] font-bold rounded-full text-indigo-600">
+                      {item.category}
+                    </span>
+                  </div>
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-6">
+                    <button 
+                      onClick={() => setSelectedImage(item.imageUrl)}
+                      className="w-full bg-white/20 backdrop-blur-md text-white py-2 rounded-xl text-xs font-bold border border-white/30"
+                    >
+                      查看大圖
+                    </button>
+                  </div>
+                </div>
+                <div className="p-5">
+                  <div className="flex justify-between items-start mb-2">
+                    <h3 className="font-black text-gray-800 leading-tight line-clamp-2">{item.name}</h3>
+                  </div>
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="flex text-yellow-400">
+                      {[...Array(5)].map((_, i) => (
+                        <Star key={i} size={12} fill={i < item.rating ? "currentColor" : "none"} className={i < item.rating ? "" : "text-gray-200"} />
+                      ))}
+                    </div>
+                    <span className="text-[10px] font-bold text-gray-400 px-2 py-0.5 bg-gray-50 rounded italic">{item.status}</span>
+                  </div>
+                  <div className="flex items-center justify-between border-t border-gray-50 pt-4">
+                    <div>
+                      <p className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter">總估值</p>
+                      <p className="font-black text-indigo-600 text-lg">
+                        ${(item.price * item.quantity).toLocaleString()}
+                      </p>
+                    </div>
+                    <button 
+                      onClick={() => handleDelete(item.id)}
+                      className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {filteredItems.length === 0 && (
+            <div className="text-center py-32">
+              <div className="bg-gray-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Search className="text-gray-300" size={24} />
+              </div>
+              <p className="text-gray-400 font-medium">找不到相關收藏...</p>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="max-w-md mx-auto mt-20 p-8 text-center bg-white rounded-[3rem] shadow-xl border border-gray-100">
+          <div className="w-20 h-20 bg-indigo-50 text-indigo-600 rounded-3xl flex items-center justify-center mx-auto mb-6">
+            <Package size={40} />
+          </div>
+          <h2 className="text-2xl font-black text-gray-800 mb-2">雲端收藏盒</h2>
+          <p className="text-gray-500 mb-8 text-sm leading-relaxed">請先登入以同步您的數位收藏庫，<br/>享受專屬的私密管理空間。</p>
+          <button 
+            onClick={handleGoogleLogin}
+            className="w-full flex items-center justify-center gap-3 bg-gray-900 text-white font-bold py-4 rounded-2xl hover:bg-black transition-all shadow-lg"
+          >
+            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
+            立即使用 Google 登入
+          </button>
+        </div>
+      )}
+
+      {/* 新增視窗 (Modal) */}
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-md">
+          <div className="bg-white rounded-[2.5rem] w-full max-w-lg max-h-[90vh] overflow-y-auto p-8 shadow-2xl relative">
+            <button onClick={() => setShowAddModal(false)} className="absolute top-6 right-6 p-2 text-gray-400 hover:bg-gray-100 rounded-full">
+              <X size={20} />
+            </button>
+            
+            <h2 className="text-2xl font-black mb-1">新增至收藏盒</h2>
+            <p className="text-gray-400 text-sm mb-8">紀錄每一份獨一無二的資產。</p>
+
+            <form onSubmit={handleAddItem} className="space-y-5">
+              <div className="space-y-1">
+                <label className="text-xs font-black text-gray-400 uppercase ml-1">物品名稱</label>
+                <input 
+                  required
+                  className="w-full p-4 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-indigo-500 transition-all font-medium"
+                  placeholder="例如：2024 限定版樂高..."
+                  value={newItem.name}
+                  onChange={e => setNewItem({...newItem, name: e.target.value})}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-black text-gray-400 uppercase ml-1">類別</label>
+                  <select 
+                    className="w-full p-4 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-indigo-500 appearance-none font-medium"
+                    value={newItem.category}
+                    onChange={e => setNewItem({...newItem, category: e.target.value})}
+                  >
+                    <option value="">選擇類型</option>
+                    {defaultCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                    <option value="自定義">+ 新增類別</option>
+                  </select>
+                </div>
+                {newItem.category === '自定義' && (
+                  <div className="space-y-1">
+                    <label className="text-xs font-black text-gray-400 uppercase ml-1">自定義名稱</label>
+                    <input 
+                      className="w-full p-4 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-indigo-500 font-medium"
+                      value={newItem.customCategory}
+                      onChange={e => setNewItem({...newItem, customCategory: e.target.value})}
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-black text-gray-400 uppercase ml-1">單價 (TWD)</label>
+                  <input 
+                    type="number"
+                    className="w-full p-4 bg-gray-50 border-none rounded-2xl font-medium"
+                    value={newItem.price}
+                    onChange={e => setNewItem({...newItem, price: e.target.value})}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-black text-gray-400 uppercase ml-1">持有數量</label>
+                  <input 
+                    type="number"
+                    className="w-full p-4 bg-gray-50 border-none rounded-2xl font-medium"
+                    value={newItem.quantity}
+                    onChange={e => setNewItem({...newItem, quantity: e.target.value})}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-black text-gray-400 uppercase ml-1">保存狀態</label>
+                  <select 
+                    className="w-full p-4 bg-gray-50 border-none rounded-2xl font-medium"
+                    value={newItem.status}
+                    onChange={e => setNewItem({...newItem, status: e.target.value})}
+                  >
+                    <option value="全新">全新</option>
+                    <option value="近新">近新</option>
+                    <option value="良品">良品</option>
+                    <option value="有損">有損</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-black text-gray-400 uppercase ml-1">推薦程度 (1-5)</label>
+                  <div className="flex items-center h-full gap-2">
+                    <input 
+                      type="range" min="1" max="5" step="1"
+                      className="flex-1 accent-indigo-600"
+                      value={newItem.rating}
+                      onChange={e => setNewItem({...newItem, rating: e.target.value})}
+                    />
+                    <span className="text-sm font-black text-indigo-600 w-8">{newItem.rating}★</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-gray-50 p-4 rounded-[1.5rem] border-2 border-dashed border-gray-200">
+                <p className="text-[10px] font-black text-gray-400 uppercase mb-3">照片設定 (Base64 儲存)</p>
+                <div className="flex gap-2 mb-4">
+                  <button 
+                    type="button"
+                    className={`flex-1 py-2 rounded-xl text-[10px] font-bold ${newItem.imageSource === 'upload' ? 'bg-indigo-600 text-white shadow-md' : 'bg-white text-gray-400'}`}
+                    onClick={() => setNewItem({...newItem, imageSource: 'upload'})}
+                  >本機上傳</button>
+                  <button 
+                    type="button"
+                    className={`flex-1 py-2 rounded-xl text-[10px] font-bold ${newItem.imageSource === 'url' ? 'bg-indigo-600 text-white shadow-md' : 'bg-white text-gray-400'}`}
+                    onClick={() => setNewItem({...newItem, imageSource: 'url'})}
+                  >網路圖片 URL</button>
+                </div>
+                
+                {newItem.imageSource === 'upload' ? (
+                  <div className="space-y-2">
+                    <input 
+                      type="file" accept="image/*"
+                      onChange={handleFileChange}
+                      className="block w-full text-[10px] text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-[10px] file:font-black file:bg-indigo-50 file:text-indigo-600 hover:file:bg-indigo-100"
+                    />
+                    {newItem.imageBase64 && (
+                      <div className="w-16 h-16 rounded-lg overflow-hidden border">
+                        <img src={newItem.imageBase64} className="w-full h-full object-cover" alt="Preview" />
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <input 
+                    type="url"
+                    placeholder="https://..."
+                    className="w-full p-3 bg-white border-none rounded-xl text-sm"
+                    value={newItem.imageUrl}
+                    onChange={e => setNewItem({...newItem, imageUrl: e.target.value})}
+                  />
+                )}
+              </div>
+
+              <button className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-4 rounded-2xl shadow-xl shadow-indigo-100 mt-2 transition-all active:scale-95">
+                確定儲存並上傳至雲端
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 燈箱 */}
+      {selectedImage && (
+        <div 
+          className="fixed inset-0 z-[60] bg-black/95 flex items-center justify-center p-4 cursor-pointer"
+          onClick={() => setSelectedImage(null)}
+        >
+          <img src={selectedImage} className="max-w-full max-h-full object-contain shadow-2xl rounded-2xl" alt="Enlarged view" />
+          <button className="absolute top-8 right-8 text-white/50 hover:text-white transition-colors">
+            <X size={40} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
